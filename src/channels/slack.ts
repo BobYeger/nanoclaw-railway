@@ -5,6 +5,7 @@ import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { logger } from '../logger.js';
+import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
   OnInboundMessage,
@@ -99,7 +100,9 @@ export class SlackChannel implements Channel {
         senderName = ASSISTANT_NAME;
       } else {
         senderName =
-          (await this.resolveUserName(msg.user ?? '')) || msg.user || 'unknown';
+          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
+          msg.user ||
+          'unknown';
       }
 
       // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
@@ -282,3 +285,14 @@ export class SlackChannel implements Channel {
     }
   }
 }
+
+registerChannel('slack', (opts: ChannelOpts) => {
+  const envVars = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+  const botToken = envVars.SLACK_BOT_TOKEN || process.env.SLACK_BOT_TOKEN;
+  const appToken = envVars.SLACK_APP_TOKEN || process.env.SLACK_APP_TOKEN;
+  if (!botToken || !appToken) {
+    logger.warn('Slack: SLACK_BOT_TOKEN or SLACK_APP_TOKEN not set');
+    return null;
+  }
+  return new SlackChannel(opts);
+});

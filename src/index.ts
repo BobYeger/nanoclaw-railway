@@ -4,7 +4,9 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   IDLE_TIMEOUT,
+  IS_RAILWAY,
   POLL_INTERVAL,
+  SLACK_MAIN_CHANNEL_ID,
   TRIGGER_PATTERN,
 } from './config.js';
 import './channels/index.js';
@@ -41,6 +43,7 @@ import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
+import { syncSkillsOnStartup } from './skill-installer.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { Channel, NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
@@ -453,6 +456,10 @@ async function main(): Promise<void> {
   logger.info('Database initialized');
   loadState();
 
+  // Sync skills from lock file (re-clones registered repos so skills
+  // survive deploys and stay up-to-date with their source repos)
+  await syncSkillsOnStartup();
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
@@ -495,6 +502,65 @@ async function main(): Promise<void> {
   if (channels.length === 0) {
     logger.fatal('No channels connected');
     process.exit(1);
+  }
+
+  // Auto-register main group (zero-config Railway deploy).
+  // Runs on every startup but only acts when no groups are registered yet.
+  // Once registered, the group persists in SQLite across restarts.
+  if (Object.keys(registeredGroups).length === 0) {
+    // Sync groups first so we have chat metadata
+    await Promise.all(
+      channels.filter((ch) => ch.syncGroups).map((ch) => ch.syncGroups!(true)),
+    );
+
+    let mainJid: string | undefined;
+    let mainName: string | undefined;
+
+    // Priority 1: SLACK_MAIN_CHANNEL_ID — directly register a Slack channel as main
+    if (SLACK_MAIN_CHANNEL_ID) {
+      mainJid = `slack:${SLACK_MAIN_CHANNEL_ID}`;
+      mainName = ASSISTANT_NAME;
+      logger.info(
+        { channelId: SLACK_MAIN_CHANNEL_ID },
+        'Using SLACK_MAIN_CHANNEL_ID for main group',
+      );
+    }
+
+    // Priority 2: Match ASSISTANT_NAME against chat names
+    if (!mainJid) {
+      const allChats = getAllChats();
+      const match = allChats.find(
+        (c) => c.name?.toLowerCase() === ASSISTANT_NAME.toLowerCase(),
+      );
+      if (match) {
+        mainJid = match.jid;
+        mainName = match.name || ASSISTANT_NAME;
+      } else {
+        const chatNames = allChats
+          .filter((c) => c.name)
+          .map((c) => c.name)
+          .slice(0, 20);
+        logger.warn(
+          { assistantName: ASSISTANT_NAME, availableChats: chatNames },
+          'No group matching ASSISTANT_NAME found. Set SLACK_MAIN_CHANNEL_ID, or create a group named after your bot, send a message, then restart.',
+        );
+      }
+    }
+
+    if (mainJid) {
+      registerGroup(mainJid, {
+        name: mainName || ASSISTANT_NAME,
+        folder: 'main',
+        trigger: `@${ASSISTANT_NAME}`,
+        added_at: new Date().toISOString(),
+        isMain: true,
+        requiresTrigger: false,
+      });
+      logger.info(
+        { jid: mainJid, name: mainName },
+        'Auto-registered main group',
+      );
+    }
   }
 
   // Start subsystems (independently of connection handler)

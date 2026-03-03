@@ -280,6 +280,123 @@ Use available_groups.json to find the JID for a group. The folder name must be c
   },
 );
 
+server.tool(
+  'install_skills',
+  'Install agent skills from a GitHub repository. The repo should contain SKILL.md files defining skills. Returns installed skill names and any required environment variables (credentials) that need to be set. A progress message is sent to the user automatically. After installation, use send_message to tell the user what was installed and ask for any missing credentials — do NOT wait for your final output to communicate results.',
+  {
+    repo: z.string().describe('GitHub repo (owner/repo or full URL)'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can install skills.' }],
+        isError: true,
+      };
+    }
+
+    // Send a progress message to the user immediately
+    writeIpcFile(MESSAGES_DIR, {
+      type: 'message',
+      chatJid,
+      text: `Installing skills from \`${args.repo}\`...`,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    const requestId = `skill-install-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'install_skills',
+      repo: args.repo,
+      requestId,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Poll for response from host
+    const INPUT_DIR = path.join(IPC_DIR, 'input');
+    const responseFile = path.join(INPUT_DIR, `${requestId}.json`);
+    const timeout = 120_000; // 2 minutes for cloning
+    const pollInterval = 500;
+    const start = Date.now();
+
+    while (Date.now() - start < timeout) {
+      if (fs.existsSync(responseFile)) {
+        try {
+          const result = JSON.parse(fs.readFileSync(responseFile, 'utf-8'));
+          fs.unlinkSync(responseFile);
+
+          if (result.error) {
+            return {
+              content: [{ type: 'text' as const, text: `Failed to install skills: ${result.error}` }],
+              isError: true,
+            };
+          }
+
+          let response = `Installed ${result.installed.length} skill(s): ${result.installed.join(', ')}`;
+          if (result.requiredInputs && result.requiredInputs.length > 0) {
+            response += '\n\nRequired environment variables:';
+            for (const input of result.requiredInputs) {
+              response += `\n- ${input.envVar}: ${input.description}${input.required ? ' (required)' : ' (optional)'}`;
+            }
+            response += '\n\nUse the set_env_var tool to set each required credential.';
+          }
+
+          return { content: [{ type: 'text' as const, text: response }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text' as const, text: `Error reading install result: ${err instanceof Error ? err.message : String(err)}` }],
+            isError: true,
+          };
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, pollInterval));
+    }
+
+    return {
+      content: [{ type: 'text' as const, text: 'Timed out waiting for skill installation to complete.' }],
+      isError: true,
+    };
+  },
+);
+
+server.tool(
+  'set_env_var',
+  'Set an environment variable for the bot (persists across restarts). Use this to store credentials needed by skills. Main group only.',
+  {
+    key: z.string().describe('Environment variable name (e.g. OUTBOUND_TOOLS_URL)'),
+    value: z.string().describe('The value to set'),
+  },
+  async (args) => {
+    if (!isMain) {
+      return {
+        content: [{ type: 'text' as const, text: 'Only the main group can set environment variables.' }],
+        isError: true,
+      };
+    }
+
+    // Validate key is safe (alphanumeric + underscore only)
+    if (!/^[A-Z][A-Z0-9_]*$/.test(args.key)) {
+      return {
+        content: [{ type: 'text' as const, text: `Invalid env var name "${args.key}". Must be uppercase alphanumeric with underscores (e.g. MY_API_KEY).` }],
+        isError: true,
+      };
+    }
+
+    writeIpcFile(TASKS_DIR, {
+      type: 'set_env_var',
+      key: args.key,
+      value: args.value,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    });
+
+    return {
+      content: [{ type: 'text' as const, text: `Environment variable ${args.key} set. It will be available to agents on next invocation.` }],
+    };
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

@@ -4,6 +4,7 @@
  */
 import { ChildProcess, exec, spawn } from 'child_process';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import {
@@ -19,6 +20,7 @@ import {
 import { readEnvFile } from './env.js';
 import { resolveGroupFolderPath, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { collectSkillEnvVars } from './skill-installer.js';
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,
@@ -62,6 +64,7 @@ function buildVolumeMounts(
 ): VolumeMount[] {
   const mounts: VolumeMount[] = [];
   const projectRoot = process.cwd();
+  const homeDir = os.homedir();
   const groupDir = resolveGroupFolderPath(group.folder);
 
   if (isMain) {
@@ -75,17 +78,6 @@ function buildVolumeMounts(
       containerPath: '/workspace/project',
       readonly: true,
     });
-
-    // Shadow .env so the agent cannot read secrets from the mounted project root.
-    // Secrets are passed via stdin instead (see readSecrets()).
-    const envFile = path.join(projectRoot, '.env');
-    if (fs.existsSync(envFile)) {
-      mounts.push({
-        hostPath: '/dev/null',
-        containerPath: '/workspace/project/.env',
-        readonly: true,
-      });
-    }
 
     // Main also gets its group folder as the working directory
     mounts.push({
@@ -169,6 +161,16 @@ function buildVolumeMounts(
     containerPath: '/home/node/.claude',
     readonly: false,
   });
+
+  // Gmail credentials directory (for Gmail MCP inside the container)
+  const gmailDir = path.join(homeDir, '.gmail-mcp');
+  if (fs.existsSync(gmailDir)) {
+    mounts.push({
+      hostPath: gmailDir,
+      containerPath: '/home/node/.gmail-mcp',
+      readonly: false, // MCP may need to refresh OAuth tokens
+    });
+  }
 
   // Per-group IPC namespace: each group gets its own IPC directory
   // This prevents cross-group privilege escalation via IPC
@@ -256,7 +258,8 @@ export function readSecrets(): Record<string, string> {
     'ANTHROPIC_AUTH_TOKEN',
   ];
   const mcpEnvKeys = collectMcpEnvVars();
-  const allKeys = [...coreKeys, ...mcpEnvKeys];
+  const skillEnvKeys = collectSkillEnvVars();
+  const allKeys = [...coreKeys, ...mcpEnvKeys, ...skillEnvKeys];
 
   const fromFile = readEnvFile(allKeys);
   // Fallback to process.env for Railway (secrets set as env vars, no .env file)

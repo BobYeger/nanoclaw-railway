@@ -6,8 +6,10 @@ import { CronExpressionParser } from 'cron-parser';
 import { DATA_DIR, IPC_POLL_INTERVAL, TIMEZONE } from './config.js';
 import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
-import { isValidGroupFolder } from './group-folder.js';
+import { appendEnvVar } from './env.js';
+import { isValidGroupFolder, resolveGroupIpcPath } from './group-folder.js';
 import { logger } from './logger.js';
+import { installSkillsFromRepo } from './skill-installer.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
@@ -171,6 +173,12 @@ export async function processTaskIpc(
     trigger?: string;
     requiresTrigger?: boolean;
     containerConfig?: RegisteredGroup['containerConfig'];
+    // For install_skills
+    repo?: string;
+    requestId?: string;
+    // For set_env_var
+    key?: string;
+    value?: string;
   },
   sourceGroup: string, // Verified identity from IPC directory
   isMain: boolean, // Verified from directory path
@@ -379,6 +387,91 @@ export async function processTaskIpc(
         logger.warn(
           { data },
           'Invalid register_group request - missing required fields',
+        );
+      }
+      break;
+
+    case 'install_skills':
+      if (isMain && data.repo && data.requestId) {
+        logger.info(
+          { repo: data.repo, requestId: data.requestId, sourceGroup },
+          'Installing skills from repo via IPC',
+        );
+        try {
+          const result = await installSkillsFromRepo(data.repo);
+          // Write response to the group's IPC input directory
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(responseFile, JSON.stringify(result, null, 2));
+          logger.info(
+            {
+              repo: data.repo,
+              installed: result.installed,
+              inputCount: result.requiredInputs.length,
+            },
+            'Skills installed via IPC',
+          );
+        } catch (err) {
+          logger.error(
+            { repo: data.repo, err },
+            'Failed to install skills via IPC',
+          );
+          const groupIpcDir = resolveGroupIpcPath(sourceGroup);
+          const responseFile = path.join(
+            groupIpcDir,
+            'input',
+            `${data.requestId}.json`,
+          );
+          fs.writeFileSync(
+            responseFile,
+            JSON.stringify({
+              installed: [],
+              requiredInputs: [],
+              error:
+                err instanceof Error ? err.message : String(err),
+            }),
+          );
+        }
+      } else if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized install_skills attempt blocked',
+        );
+      }
+      break;
+
+    case 'set_env_var':
+      if (isMain && data.key && data.value) {
+        // Validate key is safe (alphanumeric + underscore only)
+        if (!/^[A-Z][A-Z0-9_]*$/.test(data.key)) {
+          logger.warn(
+            { key: data.key, sourceGroup },
+            'Invalid env var name in set_env_var',
+          );
+          break;
+        }
+        try {
+          appendEnvVar(data.key, data.value);
+          // Also set in process.env for immediate use
+          process.env[data.key] = data.value;
+          logger.info(
+            { key: data.key, sourceGroup },
+            'Environment variable set via IPC',
+          );
+        } catch (err) {
+          logger.error(
+            { key: data.key, err },
+            'Failed to set env var via IPC',
+          );
+        }
+      } else if (!isMain) {
+        logger.warn(
+          { sourceGroup },
+          'Unauthorized set_env_var attempt blocked',
         );
       }
       break;

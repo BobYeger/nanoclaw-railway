@@ -5,11 +5,162 @@ description: Run initial NanoClaw setup. Use when user wants to install dependen
 
 # NanoClaw Setup
 
-Run setup steps automatically. Only pause when user action is required (channel authentication, configuration choices). Setup uses `bash setup.sh` for bootstrap, then `npx tsx setup/index.ts --step <name>` for all other steps. Steps emit structured status blocks to stdout. Verbose logs go to `logs/setup.log`.
+Run setup steps automatically. Only pause when user action is required (channel authentication, configuration choices).
 
 **Principle:** When something is broken or missing, fix it. Don't tell the user to go fix it themselves unless it genuinely requires their manual action (e.g. authenticating a channel, pasting a secret token). If a dependency is missing, install it. If a service won't start, diagnose and repair. Ask the user for permission when needed, then do the work.
 
 **UX Note:** Use `AskUserQuestion` for all user-facing questions.
+
+## Detect Deployment Mode
+
+Check if this is a Railway deployment:
+
+```bash
+grep -q 'IS_RAILWAY' src/config.ts && echo "RAILWAY" || echo "LOCAL"
+```
+
+Also check for `railway.json` or `Dockerfile.railway` in the project root.
+
+- **If RAILWAY** → Follow the **Railway path** below (skip steps 1–3, 6–8 from the local path)
+- **If LOCAL** → Follow the **Local path** below
+
+---
+
+# Railway Path
+
+This deployment runs on Railway — no Docker, no Apple Container, no launchd/systemd, no `setup.sh`. Node.js and dependencies are handled by the Dockerfile at build time. Locally, just run `npm install` if needed for development.
+
+## R1. Prerequisites — Railway CLI
+
+Check Railway CLI is installed and authenticated:
+
+```bash
+railway --version
+```
+
+- **Not found:** Install Railway CLI: `npm install -g @railway/cli` (or `brew install railway` on macOS)
+- **Installed:** Check auth: `railway whoami`
+  - If not logged in: `railway login`
+
+## R2. Link Project
+
+Check if already linked:
+
+```bash
+railway status
+```
+
+If not linked, link to the Railway project:
+
+```bash
+railway link
+```
+
+If this is a new project (no Railway project exists yet), use `railway init` to create one, then `railway link`.
+
+If the service is not linked, list services with `railway service status --all` and link with `railway service link <name>`.
+
+## R3. Claude Authentication
+
+Check if credentials already exist in Railway:
+
+```bash
+railway variables | grep -E 'ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN'
+```
+
+If present, confirm with user: keep or reconfigure?
+
+If not present — AskUserQuestion: Claude subscription (Pro/Max) vs Anthropic API key?
+
+**Subscription:** Tell user to run `claude setup-token` in another terminal, copy the token. Set it in Railway:
+```bash
+railway variables set CLAUDE_CODE_OAUTH_TOKEN=<token>
+```
+
+**API key:** Set it in Railway:
+```bash
+railway variables set ANTHROPIC_API_KEY=<key>
+```
+
+## R4. Set Up Channels
+
+AskUserQuestion (multiSelect): Which messaging channels do you want to enable?
+- Slack (authenticates via Slack app with Socket Mode)
+- Telegram (authenticates via bot token from @BotFather)
+- WhatsApp (authenticates via QR code or pairing code)
+- Discord (authenticates via Discord bot token)
+
+**Delegate to each selected channel's own skill.** Each channel skill handles its own code installation, authentication, registration, and JID resolution.
+
+For each selected channel, invoke its skill:
+
+- **Slack:** Invoke `/add-slack`
+- **Telegram:** Invoke `/add-telegram`
+- **WhatsApp:** Invoke `/add-whatsapp`
+- **Discord:** Invoke `/add-discord`
+
+Each skill will:
+1. Install the channel code (via `apply-skill`)
+2. Collect credentials/tokens and write to `.env`
+3. Authenticate and verify connection
+4. Register the chat with the correct JID format
+5. Build and verify
+
+**After each channel skill completes, mirror its env vars to Railway.** Read the values from `.env` and set them:
+```bash
+# Example for Slack:
+railway variables set SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-...
+
+# Example for Telegram:
+railway variables set TELEGRAM_BOT_TOKEN=...
+```
+
+## R5. Deploy
+
+Deploy to Railway:
+
+```bash
+railway up
+```
+
+Wait for the deployment to complete.
+
+## R6. Verify
+
+Check logs to confirm the bot is running:
+
+```bash
+railway logs
+```
+
+Look for:
+- "NanoClaw running" — main process started
+- Channel connection messages (e.g. "Slack connected", "Telegram bot started")
+
+**If issues found:**
+- Missing credentials → re-run step R3 or re-invoke the channel skill, then `railway variables set` the values
+- Build errors → fix the code, `npm run build`, then `railway up` again
+- Channel not connecting → verify env vars are set in Railway: `railway variables`
+
+Tell user to test: send a message in their registered chat.
+
+## Railway Troubleshooting
+
+**Service not starting:** Check `railway logs`. Common: missing env vars (`railway variables` to check), missing channel credentials (re-invoke channel skill and mirror to Railway).
+
+**No response to messages:** Check trigger pattern. Main channel doesn't need prefix. Check `railway logs` for errors.
+
+**Channel not connecting:** Verify the channel's credentials are set in Railway env vars (`railway variables`). Channels auto-enable when their credentials are present. Redeploy with `railway up` after any env var change.
+
+**Redeploy:** `railway up`
+
+**Restart:** `railway restart`
+
+---
+
+# Local Path
+
+Setup uses `bash setup.sh` for bootstrap, then `npx tsx setup/index.ts --step <name>` for all other steps. Steps emit structured status blocks to stdout. Verbose logs go to `logs/setup.log`.
 
 ## 1. Bootstrap (Node.js + Dependencies)
 
@@ -160,7 +311,7 @@ Run `npx tsx setup/index.ts --step verify` and parse the status block.
 
 Tell user to test: send a message in their registered chat. Show: `tail -f logs/nanoclaw.log`
 
-## Troubleshooting
+## Local Troubleshooting
 
 **Service not starting:** Check `logs/nanoclaw.error.log`. Common: wrong Node path (re-run step 7), missing `.env` (step 4), missing channel credentials (re-invoke channel skill).
 
