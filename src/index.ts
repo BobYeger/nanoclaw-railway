@@ -3,6 +3,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CREDENTIAL_PROXY_PORT,
   IDLE_TIMEOUT,
   IS_RAILWAY,
   POLL_INTERVAL,
@@ -10,6 +11,7 @@ import {
   TIMEZONE,
   TRIGGER_PATTERN,
 } from './config.js';
+import { startCredentialProxy } from './credential-proxy.js';
 import './channels/index.js';
 import {
   getChannelFactory,
@@ -24,6 +26,7 @@ import {
 import {
   cleanupOrphans,
   ensureContainerRuntimeRunning,
+  PROXY_BIND_HOST,
 } from './container-runtime.js';
 import {
   getAllChats,
@@ -529,9 +532,20 @@ async function main(): Promise<void> {
   // Sync persistent MCP servers (rebuild .mcp.json from lock file)
   await syncMcpOnStartup();
 
+  // Start credential proxy (containers route API calls through this)
+  // On Railway, secrets are passed via stdin instead, so the proxy is a no-op guard.
+  let proxyServer: { close: () => void } | undefined;
+  if (!IS_RAILWAY) {
+    proxyServer = await startCredentialProxy(
+      CREDENTIAL_PROXY_PORT,
+      PROXY_BIND_HOST,
+    );
+  }
+
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    proxyServer?.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
