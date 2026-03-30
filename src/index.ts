@@ -428,21 +428,20 @@ async function runAgent(
     }
 
     if (output.status === 'error') {
-      // Detect stale/corrupt session — clear it so the next retry starts fresh.
-      // The session .jsonl can go missing after a crash mid-write, manual
-      // deletion, or disk-full. The existing backoff in group-queue.ts
-      // handles the retry; we just need to remove the broken session ID.
+      // Detect stale/corrupt session: the SDK throws ENOENT when the session
+      // transcript file (.jsonl) doesn't exist inside the container. This
+      // happens after container restarts since the filesystem is ephemeral.
+      // Only clear + retry for this specific signal — transient errors
+      // (network, API) should fall through to the normal backoff path.
       const isStaleSession =
         sessionId &&
         output.error &&
-        /no conversation found|ENOENT.*\.jsonl|session.*not found/i.test(
-          output.error,
-        );
+        /ENOENT.*\.jsonl|session.*not found/i.test(output.error);
 
       if (isStaleSession) {
         logger.warn(
           { group: group.name, staleSessionId: sessionId, error: output.error },
-          'Container failed with existing session — clearing stale session and retrying with fresh session',
+          'Stale session detected (ENOENT on session transcript) — clearing and retrying with fresh session',
         );
         delete sessions[group.folder];
         deleteSession(group.folder);
