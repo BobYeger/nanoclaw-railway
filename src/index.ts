@@ -607,6 +607,10 @@ function recoverPendingMessages(): void {
 }
 
 function ensureContainerSystemRunning(): void {
+  if (process.env.RAILWAY_ENVIRONMENT) {
+    console.log("[railway] Skipping Docker check — using in-process runner");
+    return;
+  }
   ensureContainerRuntimeRunning();
   cleanupOrphans();
 }
