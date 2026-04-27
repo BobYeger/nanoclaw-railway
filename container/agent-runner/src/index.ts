@@ -222,6 +222,7 @@ function createSanitizeBashHook(extraSecretKeys: string[] = []): HookCallback {
   ])];
 
   return async (input, _toolUseId, _context) => {
+    type PreToolUseHookInput = any;
     const preInput = input as PreToolUseHookInput;
     const command = (preInput.tool_input as { command?: string })?.command;
     if (!command) return {};
