@@ -10,4 +10,13 @@ set -e
 chown -R node:node /data 2>/dev/null || true
 
 # Drop to node user and exec the CMD
+
+# Inject Claude OAuth credentials if provided
+if [ -n "$CLAUDE_CREDENTIALS_JSON" ]; then
+    mkdir -p /home/node/.claude
+    echo "$CLAUDE_CREDENTIALS_JSON" > /home/node/.claude/.credentials.json
+    chown node:node /home/node/.claude/.credentials.json
+    chmod 600 /home/node/.claude/.credentials.json
+    echo "[bootstrap] Claude OAuth credentials injected"
+fi
 exec gosu node "$@"

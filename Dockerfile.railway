@@ -88,3 +88,6 @@ RUN chmod +x /docker-entrypoint-railway.sh
 
 ENTRYPOINT ["/docker-entrypoint-railway.sh"]
 CMD ["node", "dist/index.js"]
+
+# Support OAuth credentials injection at runtime
+RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
